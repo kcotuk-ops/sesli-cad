@@ -17,6 +17,10 @@ ABSOLUTE RULES:
 - If the drawing has multiple parts, set can_build=false and explain which item needs selection.
 - If a photo is skewed/blurred/cropped so a dimension cannot be trusted, mark it ambiguous.
 - If there are duplicate dimensions that disagree, mark them blocking.
+- When a geometry-defining value is missing but the rest of that feature is known, KEEP that feature in state with the missing numeric value as null.
+- For each such missing value, create a missing_inputs entry. If one entered value applies to multiple identical features, use "paths" with all JSON paths.
+- JSON paths must start with state. Example: state.features.0.diameter
+- You may mathematically derive centered X/Y coordinates ONLY from explicitly printed overall dimensions and explicitly printed edge/center distances. Never derive from image scale.
 
 SUPPORTED CAD STATE:
 {
@@ -28,7 +32,7 @@ SUPPORTED CAD STATE:
     {"type":"block","x":number,"y":number,"z":number},
     {"type":"revolved_profile","stations":[{"z":number,"diameter":number}, ...]},
   "features": [
-    {"type":"through_hole","diameter":number,"face":"top", "placement":{"mode":"semantic","position":"center|left|right|top|bottom|top_left|top_right|bottom_left|bottom_right"}},
+    {"type":"through_hole","diameter":number|null,"face":"top", "placement":{"mode":"semantic","position":"center|left|right|top|bottom|top_left|top_right|bottom_left|bottom_right"} OR {"mode":"point","x":number,"y":number}},
     {"type":"blind_hole","diameter":number,"depth":number,"face":"top", "placement":...},
     {"type":"countersink_hole","diameter":number,"countersink_diameter":number,"angle":number,"face":"top","placement":...},
     {"type":"counterbore_hole","diameter":number,"counterbore_diameter":number,"counterbore_depth":number,"face":"top","placement":...},
@@ -59,6 +63,16 @@ RETURN ONLY valid JSON with exactly this top-level structure:
     {"label":"...", "value":number|null, "unit":"mm", "kind":"diameter|length|radius|angle|thread|pcd|other", "source_view":"front|top|side|section|note|unknown", "confidence":0.0-1.0}
   ],
   "blocking_ambiguities": ["..."],
+  "missing_inputs": [
+    {
+      "id":"short_unique_id",
+      "label":"Kullanıcıya Türkçe soru/etiket",
+      "unit":"mm",
+      "kind":"number",
+      "paths":["state.features.0.diameter"],
+      "reason":"blocking_ambiguities içinde AYNI metin"
+    }
+  ],
   "warnings": ["..."],
   "interpretation": ["short Turkish explanation of geometry inferred from explicit dimensions"]
 }
@@ -201,14 +215,22 @@ Look specifically for: missed dimensions, diameter vs radius confusion, overall 
 Never preserve a questionable value just because the first engineer proposed it. If any geometry-defining value cannot be explicitly verified from the drawing, add a blocking ambiguity and set can_build=false.
 Return the COMPLETE corrected JSON in exactly the same schema as the first extraction, and nothing else.'''
     review_text=_anthropic_message(api_key,model,source,reviewer+'\n\nFIRST ENGINEER JSON:\n'+json.dumps(first,ensure_ascii=False),4200)
-    reviewed=json.loads(_strip_json(review_text))
-    reviewed.setdefault('warnings',[])
-    reviewed['warnings'].append('Bağımsız ikinci AI mühendislik kontrolü tamamlandı.')
-    return reviewed
+    try:
+        reviewed=json.loads(_strip_json(review_text))
+        reviewed.setdefault('warnings',[])
+        reviewed['warnings'].append('Bağımsız ikinci AI mühendislik kontrolü tamamlandı.')
+        reviewed['verification_status']='passed'
+        return reviewed
+    except Exception:
+        fallback=json.loads(json.dumps(first))
+        fallback.setdefault('warnings',[])
+        fallback['warnings'].append('İkinci AI kontrolü geçerli JSON üretemedi. İlk analiz korundu; ölçüleri kullanıcı onayıyla tamamlayabilirsiniz.')
+        fallback['verification_status']='failed'
+        return fallback
 
 
 def validate_analysis(result: dict[str,Any]) -> dict[str,Any]:
-    result.setdefault('blocking_ambiguities',[]); result.setdefault('warnings',[]); result.setdefault('dimensions',[]); result.setdefault('interpretation',[])
+    result.setdefault('blocking_ambiguities',[]); result.setdefault('warnings',[]); result.setdefault('dimensions',[]); result.setdefault('interpretation',[]); result.setdefault('missing_inputs',[])
     c=float(result.get('confidence',0) or 0); result['confidence']=max(0,min(1,c))
     state=result.get('state')
     if not state:
@@ -223,6 +245,30 @@ def validate_analysis(result: dict[str,Any]) -> dict[str,Any]:
     else:
         for k in required[typ]:
             if k not in base or base[k] in (None,'',[]): result['blocking_ambiguities'].append(f'Eksik temel ölçü: {k}')
+    # Feature seviyesinde zorunlu geometrik alanları doğrula.
+    feature_required={
+      'through_hole':['diameter'],
+      'blind_hole':['diameter','depth'],
+      'countersink_hole':['diameter','countersink_diameter','angle'],
+      'counterbore_hole':['diameter','counterbore_diameter','counterbore_depth'],
+      'circular_hole_pattern':['hole_diameter','quantity','pcd'],
+      'linear_hole_pattern':['hole_diameter','quantity','spacing'],
+      'pocket':['width','height','depth'],
+      'slot':['length','width','depth'],
+      'keyway':['width','depth','length'],
+      'chamfer':['distance'],
+      'fillet':['radius'],
+      'shaft_step':['diameter','length'],
+    }
+    for i,f in enumerate((state.get('features') or [])):
+        ft=f.get('type')
+        for k in feature_required.get(ft,[]):
+            if k not in f or f.get(k) in (None,'',[]):
+                msg=f"Eksik feature ölçüsü: {ft}.{k}"
+                # AI daha açıklayıcı bir blocking ambiguity verdiyse bunu ayrıca çoğaltma.
+                if not result.get('missing_inputs') and msg not in result['blocking_ambiguities']:
+                    result['blocking_ambiguities'].append(msg)
+
     if typ=='revolved_profile' and base.get('stations'):
         sts=base['stations']
         try:

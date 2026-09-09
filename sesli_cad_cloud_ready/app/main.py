@@ -15,6 +15,9 @@ ROOT=Path(__file__).resolve().parent.parent;OUT=ROOT/'output';OUT.mkdir(exist_ok
 app=FastAPI(title='VoiceCAD Studio')
 class CommandIn(BaseModel): text:str; state:dict|None=None
 class BuildIn(BaseModel): state:dict
+class ResolveDrawingIn(BaseModel):
+    analysis: dict
+    values: dict[str, float]
 @app.get('/health')
 def health():return {'status':'ok'}
 
@@ -79,6 +82,68 @@ async def verify_drawing(file:UploadFile=File(...), analysis:str=File(...)):
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Doğrulanan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
     except Exception as e: raise HTTPException(400,str(e))
+
+
+def _set_json_path(obj:dict, path:str, value):
+    parts=path.split('.')
+    if not parts or parts[0] != 'state':
+        raise ValueError(f'Geçersiz çözüm yolu: {path}')
+    cur=obj
+    for token in parts[:-1]:
+        if token.isdigit():
+            cur=cur[int(token)]
+        else:
+            cur=cur[token]
+    last=parts[-1]
+    if last.isdigit():
+        cur[int(last)]=value
+    else:
+        cur[last]=value
+
+@app.post('/api/drawing/resolve')
+def resolve_drawing(inp:ResolveDrawingIn):
+    try:
+        result=json.loads(json.dumps(inp.analysis))
+        missing=result.get('missing_inputs') or []
+        if not missing:
+            return validate_analysis(result)
+
+        unresolved=[]
+        resolved_reasons=set()
+        for item in missing:
+            iid=str(item.get('id','')).strip()
+            if not iid or iid not in inp.values:
+                unresolved.append(item); continue
+            value=float(inp.values[iid])
+            if value <= 0:
+                raise ValueError(f"{item.get('label',iid)} için 0'dan büyük değer girin.")
+            paths=item.get('paths') or ([item.get('path')] if item.get('path') else [])
+            if not paths:
+                raise ValueError(f"{iid} için CAD yolu tanımlanmamış.")
+            for path in paths:
+                _set_json_path(result, path, value)
+            if item.get('reason'):
+                resolved_reasons.add(str(item['reason']))
+
+        result['missing_inputs']=unresolved
+        result['blocking_ambiguities']=[
+            x for x in (result.get('blocking_ambiguities') or [])
+            if str(x) not in resolved_reasons
+        ]
+        result.setdefault('warnings',[])
+        if resolved_reasons:
+            result['warnings'].append('Eksik ölçüler kullanıcı tarafından girildi; üretim öncesi teknik resimle son kontrol önerilir.')
+
+        result=validate_analysis(result)
+        if result.get('state'):
+            try:
+                st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
+            except Exception as ge:
+                result['can_build']=False
+                result.setdefault('blocking_ambiguities',[]).append('Tamamlanan geometri CAD motorunda oluşturulamadı: '+str(ge))
+        return result
+    except Exception as e:
+        raise HTTPException(400,str(e))
 
 @app.post('/api/parse')
 def parse(inp:CommandIn):

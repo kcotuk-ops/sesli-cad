@@ -73,3 +73,12 @@ Render > sesli-cad > Environment bölümüne şu secret eklenmelidir:
 - İkinci mühendislik kontrolü Claude Sonnet 5 ile yapılır.
 - `/api/drawing/ai-health` Anthropic API bağlantısını ayrı olarak test eder.
 - `ANTHROPIC_HTTP_TIMEOUT` varsayılan 120 saniyedir.
+
+
+## V7.4 - Eksik ölçü tamamlama
+- İkinci AI kontrolü STEP üretmek için zorunlu değildir.
+- Teknik resimde eksik geometrik ölçü varsa AI `missing_inputs` üretir.
+- Kullanıcı eksik ölçüyü arayüzden girer; CAD state içindeki ilgili alan(lar) otomatik tamamlanır.
+- Bir değer birden fazla aynı feature'a uygulanabilir (`paths`).
+- Eksik ölçüler tamamlanınca 3D önizleme oluşturulur ve `Bu modeli kullan` aktifleşir.
+- İkinci AI kontrolü geçerli JSON döndüremezse ilk analiz korunur.
