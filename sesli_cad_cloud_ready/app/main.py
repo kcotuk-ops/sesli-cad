@@ -9,7 +9,7 @@ from cadquery import exporters
 from .cad_engine import CadState,export_files,build_model
 from .drawing import create_pdf
 from .parser import parse_turkish_command
-from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis
+from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis,test_anthropic_connection
 
 ROOT=Path(__file__).resolve().parent.parent;OUT=ROOT/'output';OUT.mkdir(exist_ok=True)
 app=FastAPI(title='VoiceCAD Studio')
@@ -17,6 +17,13 @@ class CommandIn(BaseModel): text:str; state:dict|None=None
 class BuildIn(BaseModel): state:dict
 @app.get('/health')
 def health():return {'status':'ok'}
+
+@app.get('/api/drawing/ai-health')
+async def drawing_ai_health():
+    try:
+        return await asyncio.to_thread(test_anthropic_connection)
+    except Exception as e:
+        raise HTTPException(503, str(e))
 
 def _stl(state:CadState):
     job=uuid.uuid4().hex[:10];d=OUT/job;d.mkdir(parents=True,exist_ok=True);shape=build_model(state);p=d/'preview.stl';exporters.export(shape,str(p),tolerance=.05,angularTolerance=.1);return job,p

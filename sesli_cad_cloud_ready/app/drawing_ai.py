@@ -1,6 +1,7 @@
 from __future__ import annotations
-import os, json, base64, re, urllib.request, urllib.error
+import os, json, base64, re, urllib.request, urllib.error, io
 from typing import Any
+from PIL import Image, ImageOps
 
 SYSTEM_PROMPT = r'''
 You are a senior mechanical design engineer converting manufacturing technical drawings into a constrained parametric CAD schema.
@@ -73,6 +74,67 @@ def _strip_json(text: str) -> str:
     return text[a:b+1] if a>=0 and b>a else text
 
 
+def _prepare_image_for_ai(data: bytes, media_type: str) -> tuple[bytes, str]:
+    """Teknik resim fotoğrafını API için küçültür; ölçü yazılarını korumaya çalışır."""
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            elif im.mode == "L":
+                im = im.convert("RGB")
+
+            # Uzun kenarı en fazla 2200 px yap. Teknik resim yazıları için yeterli,
+            # telefon fotoğrafının 8-15 MP ham yükünden çok daha hızlıdır.
+            max_side = max(im.size)
+            if max_side > 2200:
+                scale = 2200.0 / max_side
+                im = im.resize(
+                    (max(1, int(im.width * scale)), max(1, int(im.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=88, optimize=True, progressive=True)
+            return out.getvalue(), "image/jpeg"
+    except Exception:
+        # İşlenemezse orijinali göndermeyi dene.
+        return data, media_type
+
+
+def test_anthropic_connection() -> dict[str, Any]:
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY tanımlı değil.")
+    model = os.getenv("ANTHROPIC_FAST_MODEL", "claude-haiku-4-5-20251001").strip()
+    payload = {
+        "model": model,
+        "max_tokens": 20,
+        "messages": [{"role": "user", "content": "Reply only with OK"}],
+    }
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return {"ok": True, "model": model, "response": "".join(
+            c.get("text", "") for c in body.get("content", []) if c.get("type") == "text"
+        )}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Anthropic API hatası ({e.code}): {detail[:800]}") from e
+    except Exception as e:
+        raise RuntimeError(f"Anthropic bağlantı testi başarısız: {e}") from e
+
+
 def _anthropic_message(api_key:str, model:str, source:dict, text:str, max_tokens:int=9000) -> str:
     payload={
         "model":model,"max_tokens":max_tokens,"system":SYSTEM_PROMPT,
@@ -84,7 +146,7 @@ def _anthropic_message(api_key:str, model:str, source:dict, text:str, max_tokens
         headers={"content-type":"application/json","x-api-key":api_key,"anthropic-version":"2023-06-01"}
     )
     try:
-        with urllib.request.urlopen(req,timeout=75) as resp:
+        with urllib.request.urlopen(req,timeout=int(os.getenv('ANTHROPIC_HTTP_TIMEOUT','120'))) as resp:
             body=json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail=e.read().decode("utf-8",errors="replace")
@@ -98,7 +160,9 @@ def analyze_drawing_bytes(data: bytes, media_type: str, filename: str, verify: b
     api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
     if not api_key:
         raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil. Render Environment bölümüne API anahtarını ekleyin.')
-    model=os.getenv('ANTHROPIC_MODEL','claude-sonnet-5').strip()
+    model=os.getenv('ANTHROPIC_FAST_MODEL','claude-haiku-4-5-20251001').strip()
+    if not (media_type == 'application/pdf' or filename.lower().endswith('.pdf')):
+        data, media_type = _prepare_image_for_ai(data, media_type)
     b64=base64.standard_b64encode(data).decode('ascii')
     if media_type == 'application/pdf' or filename.lower().endswith('.pdf'):
         source={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
@@ -111,7 +175,7 @@ def analyze_drawing_bytes(data: bytes, media_type: str, filename: str, verify: b
         'Eksik/geçersiz ölçü varsa kesinlikle tahmin etme. Desteklenen CAD şemasına dönüştür. '
         f'Dosya adı: {filename}'
     )
-    text=_anthropic_message(api_key,model,source,user_text,9000)
+    text=_anthropic_message(api_key,model,source,user_text,3200)
     first=json.loads(_strip_json(text))
 
     if verify:
@@ -123,7 +187,9 @@ def review_drawing_bytes(data: bytes, media_type: str, filename: str, first: dic
     api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
     if not api_key:
         raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil.')
-    model=os.getenv('ANTHROPIC_MODEL','claude-sonnet-5').strip()
+    model=os.getenv('ANTHROPIC_REVIEW_MODEL','claude-sonnet-5').strip()
+    if not (media_type == 'application/pdf' or filename.lower().endswith('.pdf')):
+        data, media_type = _prepare_image_for_ai(data, media_type)
     b64=base64.standard_b64encode(data).decode('ascii')
     if media_type == 'application/pdf' or filename.lower().endswith('.pdf'):
         source={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
@@ -134,7 +200,7 @@ def review_drawing_bytes(data: bytes, media_type: str, filename: str, first: dic
 Look specifically for: missed dimensions, diameter vs radius confusion, overall vs segment length confusion, section-view mistakes, wrong hole counts/PCD, thread callouts, tolerance values accidentally used as nominal dimensions, and dimensions inferred from scale rather than printed values.
 Never preserve a questionable value just because the first engineer proposed it. If any geometry-defining value cannot be explicitly verified from the drawing, add a blocking ambiguity and set can_build=false.
 Return the COMPLETE corrected JSON in exactly the same schema as the first extraction, and nothing else.'''
-    review_text=_anthropic_message(api_key,model,source,reviewer+'\n\nFIRST ENGINEER JSON:\n'+json.dumps(first,ensure_ascii=False),6000)
+    review_text=_anthropic_message(api_key,model,source,reviewer+'\n\nFIRST ENGINEER JSON:\n'+json.dumps(first,ensure_ascii=False),4200)
     reviewed=json.loads(_strip_json(review_text))
     reviewed.setdefault('warnings',[])
     reviewed['warnings'].append('Bağımsız ikinci AI mühendislik kontrolü tamamlandı.')

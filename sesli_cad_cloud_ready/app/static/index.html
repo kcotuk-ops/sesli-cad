@@ -38,25 +38,34 @@ function drawingRender(j, verified=false){
     $('drawingUse').disabled=!verified || !j.can_build || !j.state;
     $('drawingStatus').textContent=verified?(j.can_build?'İkinci kontrol tamamlandı. Model kullanılabilir.':'İkinci kontrol tamamlandı; belirsizlikler çözülmeli.'):'İlk analiz tamamlandı. Ölçüleri kontrol et ve “İkinci AI kontrolü”ne bas.';
 }
-async function fetchWithTimeout(url, options, ms=95000){
+async function fetchWithTimeout(url, options, ms=135000){
   const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
   try{return await fetch(url,{...options,signal:c.signal})}finally{clearTimeout(t)}
 }
 $('drawingAnalyze').onclick=async()=>{
   const f=$('drawingFile').files[0]; if(!f){alert('Önce teknik resim fotoğrafı veya PDF seç.');return}
   $('drawingStatus').textContent='İlk AI analizi yapılıyor… Genellikle 20–60 saniye sürer.';$('drawingResult').innerHTML='';$('drawingUse').disabled=true;$('drawingVerify').disabled=true;drawingAnalysis=null;
-  const fd=new FormData();fd.append('file',f);
+  const fd=new FormData();try{
+          const hr=await fetch('/api/drawing/ai-health',{cache:'no-store'});
+          if(!hr.ok){
+            let hj={};try{hj=await hr.json()}catch(_){}
+            throw new Error(hj.detail||'AI bağlantı testi başarısız.');
+          }
+        }catch(e){
+          throw new Error('Anthropic bağlantısı kurulamadı: '+e.message);
+        }
+        fd.append('file',f);
   try{
-    const r=await fetchWithTimeout('/api/drawing/analyze',{method:'POST',body:fd},95000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Analiz hatası');drawingRender(j,false);
-  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'Analiz 95 saniyede tamamlanamadı. Render/AI servisi yavaş olabilir; tekrar deneyin.':'Hata: '+e.message}
+    const r=await fetchWithTimeout('/api/drawing/analyze',{method:'POST',body:fd},135000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Analiz hatası');drawingRender(j,false);
+  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'Analiz 135 saniyede tamamlanamadı. Render/AI servisi yavaş olabilir; tekrar deneyin.':'Hata: '+e.message}
 };
 $('drawingVerify').onclick=async()=>{
   const f=$('drawingFile').files[0]; if(!f||!drawingAnalysis)return;
   $('drawingStatus').textContent='Bağımsız ikinci AI kontrolü yapılıyor…';$('drawingVerify').disabled=true;$('drawingUse').disabled=true;
   const fd=new FormData();fd.append('file',f);fd.append('analysis',JSON.stringify(drawingAnalysis));
   try{
-    const r=await fetchWithTimeout('/api/drawing/verify',{method:'POST',body:fd},95000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Doğrulama hatası');drawingRender(j,true);
-  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'İkinci kontrol 95 saniyede tamamlanamadı. Tekrar deneyin.':'İkinci kontrol hatası: '+e.message;$('drawingVerify').disabled=false}
+    const r=await fetchWithTimeout('/api/drawing/verify',{method:'POST',body:fd},135000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Doğrulama hatası');drawingRender(j,true);
+  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'İkinci kontrol 135 saniyede tamamlanamadı. Tekrar deneyin.':'İkinci kontrol hatası: '+e.message;$('drawingVerify').disabled=false}
 };
 $('drawingUse').onclick=()=>{if(!drawingAnalysis||!drawingAnalysis.can_build||!drawingAnalysis.state)return;state=drawingAnalysis.state;state.part_name=drawingAnalysis.part_name||state.part_name||'parca';$('docName').value=state.part_name;disposeObj(ghost);ghost=null;renderTree();selected={kind:'base',index:-1};renderBaseProps();preview();closeDrawing();setStatus('Teknik resimden çıkarılan CAD modeli yüklendi. STEP + PDF ile dışa aktarabilirsin.')};
 

@@ -65,3 +65,11 @@ Render > sesli-cad > Environment bölümüne şu secret eklenmelidir:
 - İlk teknik resim analizi tek AI çağrısıdır ve sonucu hemen gösterir.
 - İkinci bağımsız kontrol ayrı butondur.
 - Her AI çağrısında 95 saniye istemci timeoutu vardır; sonsuz bekleme yoktur.
+
+
+## V7.3 Teknik Resim AI hız düzeltmesi
+- Telefon fotoğrafları AI'ye gönderilmeden önce uzun kenar 2200 px olacak şekilde küçültülür.
+- İlk hızlı teknik resim çıkarımı Claude Haiku 4.5 ile yapılır.
+- İkinci mühendislik kontrolü Claude Sonnet 5 ile yapılır.
+- `/api/drawing/ai-health` Anthropic API bağlantısını ayrı olarak test eder.
+- `ANTHROPIC_HTTP_TIMEOUT` varsayılan 120 saniyedir.
