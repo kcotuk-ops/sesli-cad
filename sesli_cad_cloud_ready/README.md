@@ -39,3 +39,8 @@ Gerçek internet kullanımı için HTTPS destekli bir sunucuya deploy et.
 
 Bu proje Docker ile Render'a hazırdır. Repo kökünde `Dockerfile` ve `render.yaml` bulunur.
 Render üzerinde Web Service oluşturup bu repoyu seçin; runtime Docker olsun. Uygulama `0.0.0.0:$PORT` üzerinden başlar ve `/health` sağlık kontrolü vardır.
+
+
+## Yeni eklenen özellik
+- Tarayıcı içinde döndürülebilir 3D önizleme (STL tabanlı)
+- Sesli veya manuel komuttan sonra parça durumunu görme
