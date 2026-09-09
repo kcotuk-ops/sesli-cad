@@ -40,17 +40,17 @@ def build_model(state: CadState):
             if typ == "through_hole":
                 d = float(f["diameter"])
                 x = float(f.get("x",0)); y=float(f.get("y",0))
-                part = part.faces(">Z").workplane().center(x,y).hole(d)
+                part = part.faces(">Z").workplane(centerOption="CenterOfBoundBox").center(x,y).hole(d)
             elif typ == "blind_hole":
                 d=float(f["diameter"]); depth=float(f["depth"]); x=float(f.get("x",0)); y=float(f.get("y",0))
-                part = part.faces(">Z").workplane().center(x,y).hole(d, depth)
+                part = part.faces(">Z").workplane(centerOption="CenterOfBoundBox").center(x,y).hole(d, depth)
             elif typ == "circular_hole_pattern":
                 hd=float(f["hole_diameter"]); qty=int(f["quantity"]); pcd=float(f["pcd"])
                 pts=[]
                 for i in range(qty):
                     a=2*math.pi*i/qty
                     pts.append((pcd/2*math.cos(a), pcd/2*math.sin(a)))
-                part = part.faces(">Z").workplane().pushPoints(pts).hole(hd)
+                part = part.faces(">Z").workplane(centerOption="CenterOfBoundBox").pushPoints(pts).hole(hd)
             elif typ == "chamfer":
                 dist=float(f["distance"])
                 selector=f.get("selector","%Circle")

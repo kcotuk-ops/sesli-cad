@@ -1,84 +1,193 @@
 from __future__ import annotations
 import re
-from typing import Any
+import unicodedata
 from .cad_engine import CadState
 
 NUM = r"(\d+(?:[\.,]\d+)?)"
+UNIT = r"(?:mm|milim(?:etre)?|milimetre)?"
+
 
 def n(s: str) -> float:
-    return float(s.replace(",", "."))
+    return float(str(s).replace(",", "."))
+
+
+def _normalize(text: str) -> str:
+    t = text.lower().strip()
+    t = t.replace("ø", " çap ").replace("⌀", " çap ").replace("×", " x ")
+    # Common Turkish speech-to-text variants / misspellings.
+    replacements = {
+        "milimetr": "milimetre", "milimetreler": "milimetre",
+        "milim": "milimetre", " mm ": " milimetre ",
+        "flans": "flanş", "cap": "çap", "capi": "çapı", "capinda": "çapında",
+        "kalinlik": "kalınlık", "kalinliginda": "kalınlığında", "kalanlığına": "kalınlığında", "kalanligina": "kalınlığında", "kalınlığına": "kalınlığında",
+        "uzunlugunda": "uzunluğunda", "sag": "sağ", "sagdan": "sağdan",
+        "ortasina": "ortasına", "merkezine": "merkezine",
+        "dis": "diş", "radyus": "radyüs", "havsa": "havşa",
+    }
+    # Pad to avoid replacing parts of unrelated words too aggressively.
+    t = f" {t} "
+    for a,b in replacements.items():
+        t = t.replace(a,b)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _fid(state: CadState) -> str:
+    nums=[]
+    for f in state.features:
+        m=re.search(r"(\d+)$", str(f.get("id", "")))
+        if m: nums.append(int(m.group(1)))
+    return f"feature_{(max(nums) if nums else 0)+1:03d}"
+
+
+def _first(patterns, text, default=None):
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            for g in m.groups():
+                if g is not None and re.fullmatch(r"\d+(?:[\.,]\d+)?", g):
+                    return n(g)
+    return default
+
+
+def _remove_types(state: CadState, *types: str):
+    state.features = [f for f in state.features if f.get("type") not in types]
+
+
+def _upsert_single(state: CadState, typ: str, data: dict):
+    for f in state.features:
+        if f.get("type") == typ:
+            f.update(data)
+            return
+    state.features.append({"id": _fid(state), "type": typ, **data})
+
+
+def _is_new_part_command(t: str) -> bool:
+    create_words = ("yap", "oluştur", "çiz", "hazırla", "üret")
+    part_words = ("flanş", "mil", "silindir", "şaft", "saft", "blok", "plaka", "boru")
+    return any(w in t for w in create_words) and any(w in t for w in part_words)
+
 
 def parse_turkish_command(text: str, current: CadState | None = None) -> CadState:
-    t = text.lower().replace("ø", " çap ").replace("mm", " milimetre ")
-    state = current or CadState()
+    t = _normalize(text)
+    state = CadState(**(current.__dict__ if current else CadState().__dict__))
+    # Deep-copy feature/base containers because API state may be reused.
+    state.base = dict(state.base)
+    state.features = [dict(f) for f in state.features]
 
-    # Part name
-    if "flanş" in t or "flans" in t:
+    # A command that clearly creates/draws a NEW base part must never inherit old holes/features.
+    if _is_new_part_command(t):
+        state.features = []
+
+    # ---------- BASE GEOMETRY ----------
+    if "flanş" in t:
+        d = _first([
+            rf"{NUM}\s*{UNIT}\s*(?:çapında|çaplı|çap)",
+            rf"(?:dış\s*)?çap(?:ı)?\s*{NUM}",
+        ], t, state.base.get("diameter", 100))
+        th = _first([
+            rf"{NUM}\s*{UNIT}\s*(?:kalınlığında|kalınlık|kalınlığında bir)",
+            rf"kalınlık(?:ı)?\s*{NUM}",
+        ], t, state.base.get("thickness", 20))
         state.part_name = "flans"
-        d = _first([rf"{NUM}\s*(?:milimetre\s*)?(?:çap(?:ında|li|lı)?|cap)", rf"çap\s*{NUM}"], t, 100)
-        th = _first([rf"{NUM}\s*(?:milimetre\s*)?(?:kalınlığında|kalinliginda|kalınlık|kalinlik)"], t, 20)
-        state.base = {"type":"flange","diameter":d,"thickness":th}
+        state.base = {"type": "flange", "diameter": float(d), "thickness": float(th)}
+
+    elif "boru" in t:
+        od = _first([rf"(?:dış\s*)?çap(?:ı)?\s*{NUM}", rf"{NUM}\s*{UNIT}\s*dış\s*çap"], t, state.base.get("outer_diameter",60))
+        id_ = _first([rf"(?:iç\s*)?çap(?:ı)?\s*{NUM}", rf"{NUM}\s*{UNIT}\s*iç\s*çap"], t, state.base.get("inner_diameter",40))
+        l = _first([rf"{NUM}\s*{UNIT}\s*(?:uzunluğunda|boyunda|uzunluk)", rf"uzunluk(?:u)?\s*{NUM}"], t, state.base.get("length",100))
+        state.part_name="boru"; state.base={"type":"tube","outer_diameter":float(od),"inner_diameter":float(id_),"length":float(l)}
+
     elif "blok" in t or "plaka" in t:
-        vals = [n(x) for x in re.findall(NUM, t)[:3]]
-        x,y,z = (vals+[100,60,20])[:3]
-        state.part_name="blok"
-        state.base={"type":"block","x":x,"y":y,"z":z}
+        # Prefer X/Y/Z labels; otherwise first 3 dimensions.
+        x=_first([rf"x\s*{NUM}"],t,None); y=_first([rf"y\s*{NUM}"],t,None); z=_first([rf"z\s*{NUM}"],t,None)
+        if None in (x,y,z):
+            vals=[n(v) for v in re.findall(NUM,t)[:3]]
+            defaults=[100,60,20]
+            vals=(vals+defaults)[:3]
+            x=x if x is not None else vals[0]; y=y if y is not None else vals[1]; z=z if z is not None else vals[2]
+        state.part_name="blok"; state.base={"type":"block","x":float(x),"y":float(y),"z":float(z)}
+
     elif any(w in t for w in ["mil", "silindir", "şaft", "saft"]):
-        d = _first([rf"{NUM}\s*(?:milimetre\s*)?(?:çap(?:ında|li|lı)?|cap)", rf"çap\s*{NUM}"], t, state.base.get("diameter",50))
-        l = _first([rf"{NUM}\s*(?:milimetre\s*)?(?:uzunluğunda|uzunlugunda|boyunda|uzunluk)"], t, state.base.get("length",100))
-        state.part_name="mil"
-        state.base={"type":"cylinder","diameter":d,"length":l}
+        d = _first([
+            rf"{NUM}\s*{UNIT}\s*(?:çapında|çaplı|çap)",
+            rf"çap(?:ı)?\s*{NUM}",
+        ], t, state.base.get("diameter",50))
+        l = _first([
+            rf"{NUM}\s*{UNIT}\s*(?:uzunluğunda|boyunda|uzunluk)",
+            rf"(?:uzunluk|boy)(?:u)?\s*{NUM}",
+        ], t, state.base.get("length",100))
+        state.part_name="mil"; state.base={"type":"cylinder","diameter":float(d),"length":float(l)}
 
-    # edits / features
-    # central hole
-    m = re.search(rf"(?:ortasına|ortasina|merkeze|merkezine).*?{NUM}\s*(?:milimetre\s*)?(?:çapında|capinda|lik|lık|delik)", t)
-    if not m:
-        m = re.search(rf"{NUM}\s*(?:milimetre\s*)?(?:çapında|capinda)?\s*(?:merkez\s*)?delik", t)
-    if m:
-        state.features.append({"id":_fid(state),"type":"through_hole","diameter":n(m.group(1)),"x":0,"y":0})
+    # ---------- DELETIONS ----------
+    if re.search(r"(?:merkez|orta).*?(?:deliği|delik).*?(?:sil|kaldır)", t) or re.search(r"(?:sil|kaldır).*?(?:merkez|orta).*?delik",t):
+        _remove_types(state,"through_hole")
+    if re.search(r"pah.*?(?:sil|kaldır)|(?:sil|kaldır).*?pah",t):
+        _remove_types(state,"chamfer")
+    if re.search(r"(?:radyüs|fillet).*?(?:sil|kaldır)|(?:sil|kaldır).*?(?:radyüs|fillet)",t):
+        _remove_types(state,"fillet")
+    if re.search(r"pcd.*?(?:sil|kaldır)|(?:sil|kaldır).*?pcd",t):
+        _remove_types(state,"circular_hole_pattern")
 
-    # hole pattern: 6 tane 10'luk delik, 80 PCD
-    qtym = re.search(r"(\d+)\s*(?:tane|adet).*?delik", t)
-    pcdm = re.search(rf"{NUM}\s*(?:milimetre\s*)?(?:pcd|hatve)", t)
-    hdm = re.search(rf"(?:tane|adet).*?{NUM}\s*(?:milimetre\s*)?(?:lik|lık|çapında|capinda)?\s*delik", t)
-    if qtym and pcdm:
-        hd = n(hdm.group(1)) if hdm else 10.0
-        state.features.append({"id":_fid(state),"type":"circular_hole_pattern","quantity":int(qtym.group(1)),"pcd":n(pcdm.group(1)),"hole_diameter":hd})
+    # ---------- CENTRAL HOLE ----------
+    # Handles: "ortasına 40 mm", "tam ortasına 40'lık delik", "merkez deliğini 50 yap".
+    center_d = _first([
+        rf"(?:tam\s*)?(?:ortasına|ortada|merkeze|merkezine)\s*(?:çapı?\s*)?{NUM}\s*{UNIT}(?:\s*(?:lik|lık|luk|lük|çapında|delik))?",
+        rf"(?:merkez|orta)\s*(?:deliğini|deliği|delik)\s*(?:çapı?\s*)?{NUM}",
+        rf"(?:merkez|orta)\s*(?:deliğini|deliği|delik).*?{NUM}\s*{UNIT}",
+    ], t, None)
+    # avoid creating after explicit deletion command
+    if center_d is not None and not re.search(r"(?:merkez|orta).*?delik.*?(?:sil|kaldır)",t):
+        _upsert_single(state,"through_hole",{"diameter":float(center_d),"x":0.0,"y":0.0})
 
-    # chamfer
-    cm = re.search(rf"{NUM}\s*(?:milimetre\s*)?pah", t)
-    if cm:
-        state.features.append({"id":_fid(state),"type":"chamfer","distance":n(cm.group(1)),"selector":"%Circle"})
+    # ---------- HOLE PATTERN ----------
+    # Both orders: "80 PCD üzerinde 6 tane 10'luk delik" / "6 adet 10 delik PCD 80".
+    pcd = _first([rf"{NUM}\s*{UNIT}\s*(?:pcd|hatve(?:\s*çapı)?)", rf"(?:pcd|hatve(?:\s*çapı)?)\s*{NUM}"],t,None)
+    qtym = re.search(r"(\d+)\s*(?:tane|adet)\b",t)
+    if pcd is not None and qtym:
+        qty=int(qtym.group(1))
+        # Search a hole diameter near the quantity, but do not accidentally use PCD or center-hole diameter.
+        hd = _first([
+            rf"{qty}\s*(?:tane|adet).*?{NUM}\s*{UNIT}\s*(?:lik|lık|luk|lük|çapında|çaplı)?\s*(?:delik|deliği)",
+            rf"{qty}\s*(?:tane|adet).*?(?:çapı|çap)\s*{NUM}",
+            rf"{NUM}\s*{UNIT}\s*(?:lik|lık|luk|lük|çapında)?\s*{qty}\s*(?:tane|adet).*?delik",
+        ],t,10.0)
+        _upsert_single(state,"circular_hole_pattern",{"quantity":qty,"pcd":float(pcd),"hole_diameter":float(hd)})
 
-    # fillet/radius
-    fm = re.search(rf"(?:radyüs|radius|fillet).*?{NUM}|{NUM}\s*(?:milimetre\s*)?(?:radyüs|radius|fillet)", t)
-    if fm:
-        val = next((g for g in fm.groups() if g), None)
-        if val:
-            state.features.append({"id":_fid(state),"type":"fillet","radius":n(val),"selector":"|Z"})
+    # ---------- CHAMFER ----------
+    cham = _first([
+        rf"{NUM}\s*{UNIT}\s*(?:pah|pahlı|pahlama)",
+        rf"pah(?:ı)?\s*{NUM}",
+    ],t,None)
+    if cham is not None and not re.search(r"pah.*?(?:sil|kaldır)|(?:sil|kaldır).*?pah",t):
+        _upsert_single(state,"chamfer",{"distance":float(cham),"selector":"%Circle"})
 
-    # keyway
-    km = re.search(rf"{NUM}\s*(?:milimetre\s*)?(?:genişliğinde|genisliginde|lik|lık)?\s*kama", t)
-    if km:
-        state.features.append({"id":_fid(state),"type":"keyway","width":n(km.group(1)),"depth":max(1,n(km.group(1))/3)})
+    # ---------- FILLET ----------
+    fillet = _first([
+        rf"(?:radyüs|radius|fillet)\s*(?:r)?\s*{NUM}",
+        rf"{NUM}\s*{UNIT}\s*(?:radyüs|radius|fillet)",
+        rf"r\s*{NUM}",
+    ],t,None)
+    if fillet is not None and not re.search(r"(?:radyüs|fillet).*?(?:sil|kaldır)|(?:sil|kaldır).*?(?:radyüs|fillet)",t):
+        _upsert_single(state,"fillet",{"radius":float(fillet),"selector":"|Z"})
 
-    # shaft step: sağdan 40 boyunca çapı 50
-    sm = re.search(rf"(?:sağdan|sagdan|sağ taraftan|sag taraftan).*?{NUM}\s*(?:milimetre\s*)?(?:boyunca|uzun).*?(?:çapı|capi|çap)\s*{NUM}", t)
+    # ---------- SHAFT STEP ----------
+    sm = re.search(rf"(?:sağdan|sağ\s*uçtan|sağ\s*taraftan).*?{NUM}\s*{UNIT}\s*(?:boyunca|uzunluğunda|boy).*?(?:çapı|çap)\s*{NUM}",t)
     if sm:
-        state.features.append({"id":_fid(state),"type":"shaft_step","length":n(sm.group(1)),"diameter":n(sm.group(2)),"position":"right"})
+        _upsert_single(state,"shaft_step",{"length":n(sm.group(1)),"diameter":n(sm.group(2)),"position":"right"})
 
-    # thread metadata
-    tm = re.search(r"m\s*(\d+)(?:\s*[x×]\s*([\d\.,]+))?\s*(?:diş|dis)", t)
-    if tm:
-        state.features.append({"id":_fid(state),"type":"internal_thread","size":f"M{tm.group(1)}","pitch": n(tm.group(2)) if tm.group(2) else None})
+    # ---------- KEYWAY ----------
+    keyw = _first([rf"{NUM}\s*{UNIT}\s*(?:genişliğinde|genişlikte|lik|lık)?\s*(?:kama\s*)?(?:kanalı|kama)"],t,None)
+    if keyw is not None:
+        depth=_first([rf"(?:derinliği|derinlik)\s*{NUM}",rf"{NUM}\s*{UNIT}\s*derinliğinde"],t,max(1.0,float(keyw)/3))
+        _upsert_single(state,"keyway",{"width":float(keyw),"depth":float(depth)})
+
+    # ---------- THREAD ----------
+    tm = re.search(r"m\s*(\d+(?:[\.,]\d+)?)(?:\s*x\s*([\d\.,]+))?\s*(?:diş|vida)?",t)
+    if tm and ("diş" in t or "vida" in t or "m" in t):
+        size=f"M{tm.group(1).replace(',', '.')}"
+        pitch=n(tm.group(2)) if tm.group(2) else None
+        typ="external_thread" if any(w in t for w in ["dış diş","dış vida"]) else "internal_thread"
+        _upsert_single(state,typ,{"size":size,"pitch":pitch})
 
     return state
-
-def _first(patterns, text, default):
-    for p in patterns:
-        m=re.search(p,text)
-        if m: return n(m.group(1))
-    return float(default)
-
-def _fid(state):
-    return f"feature_{len(state.features)+1:03d}"

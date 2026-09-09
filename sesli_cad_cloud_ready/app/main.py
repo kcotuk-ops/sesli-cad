@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from .cad_engine import CadState, export_files
+from .cad_engine import CadState, export_files, build_model
 from .drawing import create_pdf
 from .parser import parse_turkish_command
 
@@ -29,6 +29,22 @@ def parse(inp: CommandIn):
     try:
         state=parse_turkish_command(inp.text,current)
         return {"state":state.__dict__}
+    except Exception as e:
+        raise HTTPException(400,str(e))
+
+
+@app.post('/api/preview')
+def preview(inp: BuildIn):
+    try:
+        from cadquery import exporters
+        state=CadState(**inp.state)
+        job=uuid.uuid4().hex[:10]
+        d=OUT/job; d.mkdir(parents=True,exist_ok=True)
+        shape=build_model(state)
+        stem="".join(c if c.isalnum() or c in "-_" else "_" for c in state.part_name) or "parca"
+        stl=d/f"{stem}.stl"
+        exporters.export(shape, str(stl), tolerance=0.05, angularTolerance=0.1)
+        return {"job":job,"stl":f"/files/{job}/{stl.name}","state":state.__dict__}
     except Exception as e:
         raise HTTPException(400,str(e))
 
