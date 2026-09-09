@@ -1,46 +1,29 @@
-# Sesli CAD – V1
+# VoiceCAD Studio V5 — Tek Paket
 
-iPhone/iPad/PC tarayıcısından çalışan, Türkçe sesli veya manuel komutla mekanik parça oluşturan prototip.
+Mobil/masaüstü tarayıcıda çalışan feature tabanlı CAD prototipi.
 
-## Özellikler
-- Manuel parça: mil/silindir, flanş, blok, boru
-- Türkçe komut ayrıştırma (internet/AI API olmadan temel kalıplar)
-- Sesli giriş: tarayıcının SpeechRecognition/webkitSpeechRecognition desteği varsa Türkçe konuşma
-- İşlem ekleme: delik, kör delik, PCD delikleri, pah, radyüs, kademe, kama kanalı, cep, diş notasyonu
-- STEP + STL üretimi
-- A4 yatay teknik resim PDF'i (4 görünüş + işlem/ölçü özeti)
+## V5 özellikleri
+- SolidWorks/CATIA benzeri çalışma alanı
+- FeatureManager ağacı
+- PropertyManager ile feature ölçüsü değiştirme / silme
+- 3D STL önizleme: döndür, zoom, pan, standart görünüşler
+- Model yüzeyine/noktaya dokunarak konum seçme
+- Seçili noktaya manuel Delik, Kör Delik, Havşa, Cep, Slot, Kama vb. ekleme
+- Seçili noktadan sonra Türkçe “buraya Ø8 delik aç” gibi ses/metin komutları
+- Türkçe sesli komut
+- STEP, STL ve teknik resim PDF çıktısı
 - WhatsApp paylaşım bağlantısı
-- Mobil uyumlu/PWA tabanlı arayüz
+- iPhone Safari responsive arayüz
 
-> Not: V1 teknik resim PDF'i otomatik 4 görünüş ve ölçü/feature özeti üretir; üretim standardında tam GD&T / otomatik ölçülendirme henüz değildir. Diş özelliği V1'de geometrik helis yerine teknik notasyon/metadata olarak tutulur.
+## Dokunarak işlem
+1. 3D model üzerinde planar bir yüzeye kısa dokun.
+2. Seçilen yüzey ve X/Y koordinatı ekranda gösterilir.
+3. Üst araç çubuğundan Delik/Cep/Slot vb. seç. Form seçili koordinatla açılır.
+4. Alternatif: mikrofona “buraya 8 mm delik aç” de.
 
-## Çalıştırma
-Python 3.11/3.12 önerilir.
+Not: V5’te blokların üst/alt/sağ/sol/ön/arka yüzeyleri dokunarak konumlandırmayı destekler. Silindirik parçaların eğrisel yan yüzeyine dokunarak feature yerleştirme henüz sınırlandırılmıştır; uç yüzeylerde ve sesli tarifte çalışır.
 
-```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+## Render kurulumu
+Mevcut Render servisiniz `sesli_cad_cloud_ready` Root Directory kullanıyorsa bu ZIP'in içindeki tüm dosya/klasörleri GitHub'da o klasörün içine yükleyin ve commit edin. Render otomatik deploy eder.
 
-Bilgisayarda: http://localhost:8000
-
-iPhone ile aynı Wi-Fi ağındaysan bilgisayarın yerel IP'sini aç: `http://BILGISAYAR_IP:8000`.
-Gerçek internet kullanımı için HTTPS destekli bir sunucuya deploy et.
-
-## Örnek ses/metin komutu
-`100 milimetre çapında 20 milimetre kalınlığında flanş oluştur. Ortasına 40 milimetre delik aç. 80 PCD üzerinde 6 tane 10 milimetrelik delik aç ve 2 milimetre pah ver.`
-
-## Buluta yayınlama (Render / HTTPS)
-
-Bu proje Docker ile Render'a hazırdır. Repo kökünde `Dockerfile` ve `render.yaml` bulunur.
-Render üzerinde Web Service oluşturup bu repoyu seçin; runtime Docker olsun. Uygulama `0.0.0.0:$PORT` üzerinden başlar ve `/health` sağlık kontrolü vardır.
-
-
-## Yeni eklenen özellik
-- Tarayıcı içinde döndürülebilir 3D önizleme (STL tabanlı)
-- Sesli veya manuel komuttan sonra parça durumunu görme
+Health check: `/health`
