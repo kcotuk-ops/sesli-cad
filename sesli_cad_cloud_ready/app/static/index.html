@@ -7,10 +7,10 @@
 <div class="card"><h3>3D görsel önizleme</h3><div class="row" style="margin-bottom:10px"><span class="pill">Döndür</span><span class="pill">Yakınlaştır</span><span class="pill">Kaydır</span></div><div id="viewer" class="viewer"><div class="viewerHint">Henüz önizleme yok. "Önizleme oluştur" veya "STEP + PDF oluştur" butonuna bas.</div></div><p id="previewStatus" class="status">Parçanın mevcut durumunu burada göreceksin.</p></div>
 <div class="card"><h3>Model planı</h3><pre id="summary" style="white-space:pre-wrap">Henüz model yok.</pre><div id="features"></div><div class="row"><select id="featureType" style="max-width:210px"><option value="through_hole">Delik</option><option value="blind_hole">Kör delik</option><option value="circular_hole_pattern">PCD delikleri</option><option value="chamfer">Pah</option><option value="fillet">Radyüs</option><option value="shaft_step">Kademe</option><option value="keyway">Kama kanalı</option><option value="pocket">Cep</option><option value="internal_thread">İç diş (notasyon)</option></select><button class="btn2 btn" id="addFeature">+ İşlem ekle</button></div><div id="featureForm"></div><button id="buildBtn" class="btn" style="margin-top:12px">STEP + PDF oluştur</button><p id="buildStatus" class="status"></p></div>
 <div class="card"><h3>Çıktılar</h3><div id="links" class="links">Henüz çıktı yok.</div></div></div>
-<script type="module">
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
-import { STLLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/STLLoader.js';
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script>
 
 let state={part_name:'parca',base:{type:'cylinder',diameter:50,length:100},features:[]};
 const $=id=>document.getElementById(id);
@@ -42,13 +42,13 @@ function initViewer(){
   renderer.setPixelRatio(window.devicePixelRatio||1);
   renderer.setSize(w,h);
   el.appendChild(renderer.domElement);
-  controls=new OrbitControls(camera,renderer.domElement);
+  controls=new THREE.OrbitControls(camera,renderer.domElement);
   controls.enableDamping=true;
   scene.add(new THREE.AxesHelper(40));
   light1=new THREE.HemisphereLight(0xffffff,0xb0b7c3,1.1); scene.add(light1);
   light2=new THREE.DirectionalLight(0xffffff,1.1); light2.position.set(200,200,300); scene.add(light2);
   const grid=new THREE.GridHelper(300,20,0xd1d5db,0xe5e7eb); scene.add(grid);
-  loader=new STLLoader();
+  loader=new THREE.STLLoader();
   function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera);} animate();
   window.addEventListener('resize',()=>{const w=el.clientWidth,h=el.clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h);});
 }
@@ -96,5 +96,11 @@ $('previewBtnVoice').onclick=()=>buildAndMaybePreview(false);
 $('previewBtnManual').onclick=()=>buildAndMaybePreview(false);
 $('buildBtn').onclick=()=>buildAndMaybePreview(true);
 render();
-initViewer();
+try {
+  initViewer();
+  $('previewStatus').textContent='3D görüntüleyici hazır.';
+} catch(e) {
+  console.error(e);
+  $('previewStatus').textContent='3D görüntüleyici yüklenemedi; diğer butonlar yine çalışır.';
+}
 </script></body></html>
