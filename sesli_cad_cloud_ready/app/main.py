@@ -9,7 +9,7 @@ from cadquery import exporters
 from .cad_engine import CadState,export_files,build_model
 from .drawing import create_pdf
 from .parser import parse_turkish_command
-from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis,test_anthropic_connection
+from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis,test_anthropic_connection,rescore_analysis
 
 ROOT=Path(__file__).resolve().parent.parent;OUT=ROOT/'output';OUT.mkdir(exist_ok=True)
 app=FastAPI(title='VoiceCAD Studio')
@@ -61,6 +61,8 @@ async def analyze_drawing(file:UploadFile=File(...)):
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
+                result['cad_validated']=True
+                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
             except Exception as ge:
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Çıkarılan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
@@ -78,6 +80,8 @@ async def verify_drawing(file:UploadFile=File(...), analysis:str=File(...)):
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
+                result['cad_validated']=True
+                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
             except Exception as ge:
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Doğrulanan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
@@ -138,6 +142,8 @@ def resolve_drawing(inp:ResolveDrawingIn):
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
+                result['cad_validated']=True
+                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
             except Exception as ge:
                 result['can_build']=False
                 result.setdefault('blocking_ambiguities',[]).append('Tamamlanan geometri CAD motorunda oluşturulamadı: '+str(ge))

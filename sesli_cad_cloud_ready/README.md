@@ -82,3 +82,14 @@ Render > sesli-cad > Environment bölümüne şu secret eklenmelidir:
 - Bir değer birden fazla aynı feature'a uygulanabilir (`paths`).
 - Eksik ölçüler tamamlanınca 3D önizleme oluşturulur ve `Bu modeli kullan` aktifleşir.
 - İkinci AI kontrolü geçerli JSON döndüremezse ilk analiz korunur.
+
+
+## V7.6 - Precision Drawing AI
+- V7.5 eksik ölçü/3D/STEP düzeltmeleri aynen korunur.
+- Telefon fotoğrafı için tam sayfa + 4 yakın plan görüntü aynı analizde kullanılır; küçük ölçü rakamlarının kaybolması azaltılır.
+- Teknik resim ilk analizinde doğruluk odaklı Sonnet modeli varsayılandır (`ANTHROPIC_DRAWING_MODEL`).
+- Tek bir AI `confidence` yüzdesi artık STEP kararını belirlemez.
+- `geometry_completeness`: CAD state'teki zorunlu ölçülerin deterministik tamamlık oranıdır. Tam geometri = %100.
+- `reading_confidence`: tek tek okunan ölçülerin görsel güven ortalamasıdır.
+- CAD motoru STL'yi başarıyla oluşturduğunda `cad_validated=true` ile skor yeniden kalibre edilir.
+- Net/eksiksiz çizimde geometri tamamlığı %100 görünür; belirsiz/eksik ölçü varsa sistem bunu saklamaz.

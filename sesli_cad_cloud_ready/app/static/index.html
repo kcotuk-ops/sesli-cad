@@ -38,6 +38,8 @@ $('drawingBtn').onclick=openDrawing;$('drawingBtnMobile').onclick=openDrawing;$(
 function drawingRender(j, verified=false){
     drawingAnalysis=j;
     const conf=Math.round((j.confidence||0)*100);
+    const complete=Math.round((j.geometry_completeness==null?0:j.geometry_completeness)*100);
+    const reading=Math.round((j.reading_confidence==null?(j.confidence||0):j.reading_confidence)*100);
     const dims=(j.dimensions||[]).map(d=>`<div class="dimRow"><b>${d.label||d.kind||'Ölçü'}</b>: ${d.value==null?'okunamadı':d.value+' '+(d.unit||'mm')} <span style="float:right;color:#64748b">${Math.round((d.confidence||0)*100)}%</span></div>`).join('');
     const amb=(j.blocking_ambiguities||[]).map(x=>`<div class="bad">⛔ ${x}</div>`).join('');
     const warns=(j.warnings||[]).map(x=>`<div class="warn">⚠️ ${x}</div>`).join('');
@@ -49,7 +51,13 @@ function drawingRender(j, verified=false){
       : '<div class="warn">İlk analiz tamamlandı. İkinci kontrol önerilir ama STEP için zorunlu değildir.</div>';
 
     $('drawingResult').innerHTML=`<div class="analysisGrid">
-      <div class="analysisCard"><h4>ANALİZ GÜVENİ</h4><div class="confidence">%${conf}</div><div>${j.drawing_type||'unknown'} · ${j.units||'mm'}</div>${verifyNote}${j.can_build?'<div class="good">✓ Geometri tamamlandı. Model kullanılabilir.</div>':'<div class="bad">STEP için eksik/belirsiz ölçüleri tamamla.</div>'}</div>
+      <div class="analysisCard"><h4>MODEL DOĞRULAMA</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:7px 0">
+        <div><div style="font-size:11px;color:#64748b">GEOMETRİ TAMAMLIĞI</div><div class="confidence">%${complete}</div></div>
+        <div><div style="font-size:11px;color:#64748b">ÖLÇÜ OKUMA GÜVENİ</div><div class="confidence">%${reading}</div></div>
+      </div>
+      <div style="font-size:12px;color:#64748b">Birleşik doğrulama: %${conf} · ${j.drawing_type||'unknown'} · ${j.units||'mm'}</div>
+      ${verifyNote}${j.can_build?'<div class="good">✓ Geometri tamamlandı ve CAD modeli kurulabilir.</div>':'<div class="bad">STEP için eksik/belirsiz ölçüleri tamamla.</div>'}</div>
       <div class="analysisCard"><h4>PARÇA</h4><b>${j.part_name||'Parça'}</b>${interp}</div>
       <div class="analysisCard"><h4>OKUNAN ÖLÇÜLER</h4>${dims||'Ölçü listesi yok.'}</div>
       <div class="analysisCard"><h4>KONTROL</h4>${amb||'<div class="good">Bloklayıcı belirsizlik bulunmadı.</div>'}${warns}</div>
@@ -82,6 +90,11 @@ async function resolveMissingInputs(){
       const j=await r.json();
       if(!r.ok)throw new Error(j.detail||'Eksik ölçüler uygulanamadı');
       drawingRender(j,false);
+      if(j.stl){
+        $('drawingStatus').textContent=j.can_build
+          ? '✓ Eksik ölçüler uygulandı. 3D model hazır; “Bu modeli kullan” aktif.'
+          : '3D önizleme oluşturuldu fakat kalan bir belirsizlik var.';
+      }
     }catch(e){$('drawingStatus').textContent='Ölçü tamamlama hatası: '+e.message}
 }
 

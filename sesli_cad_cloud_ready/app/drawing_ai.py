@@ -5,7 +5,16 @@ from PIL import Image, ImageOps
 
 SYSTEM_PROMPT = r'''
 You are a senior mechanical design engineer converting manufacturing technical drawings into a constrained parametric CAD schema.
-Your job is NOT OCR-only. Interpret orthographic views, section views, centerlines, dimensions, diameter/radius/thread symbols, hole patterns and geometric relationships.
+Your job is NOT OCR-only. Reconstruct the manufacturable solid by interpreting orthographic views, section views, centerlines, dimensions, diameter/radius/thread symbols, hole patterns, repeated/symmetric features and geometric relationships.
+
+Before returning JSON, silently perform this engineering checklist:
+1) identify the single manufactured part and its manufacturing family (turned/prismatic/sheet/assembly);
+2) identify front/top/side/section/detail views and do not count the same feature twice;
+3) read overall dimensions first, then segment/feature dimensions;
+4) reconcile repeated dimensions and symmetry/centerline information;
+5) distinguish Ø diameter, R radius, M thread, PCD/bolt circle, depth, quantity, chamfer and tolerance callouts;
+6) verify that every CAD feature is supported by an explicit printed dimension or an exact mathematical derivation from printed dimensions;
+7) ensure the proposed CAD state can describe the same solid from every view.
 
 ABSOLUTE RULES:
 - Never invent a dimension. If a required dimension is missing, unreadable, contradictory, or only inferable by scale from the image, put it in blocking_ambiguities.
@@ -54,7 +63,7 @@ For axisymmetric turned parts prefer revolved_profile. Its stations define the O
 RETURN ONLY valid JSON with exactly this top-level structure:
 {
   "can_build": true|false,
-  "confidence": 0.0-1.0,
+  "confidence": 0.0-1.0,  // visual-reading confidence only; application will independently compute geometry completeness
   "drawing_type": "turned|prismatic|sheet|assembly|unknown",
   "part_name": "...",
   "units": "mm",
@@ -89,31 +98,172 @@ def _strip_json(text: str) -> str:
 
 
 def _prepare_image_for_ai(data: bytes, media_type: str) -> tuple[bytes, str]:
-    """Teknik resim fotoğrafını API için küçültür; ölçü yazılarını korumaya çalışır."""
+    """Teknik resmi ana analiz için yüksek okunabilirlikte normalize eder."""
     try:
         with Image.open(io.BytesIO(data)) as im:
-            im = ImageOps.exif_transpose(im)
-            if im.mode not in ("RGB", "L"):
-                im = im.convert("RGB")
-            elif im.mode == "L":
-                im = im.convert("RGB")
-
-            # Uzun kenarı en fazla 2200 px yap. Teknik resim yazıları için yeterli,
-            # telefon fotoğrafının 8-15 MP ham yükünden çok daha hızlıdır.
+            im = ImageOps.exif_transpose(im).convert("RGB")
             max_side = max(im.size)
-            if max_side > 2200:
-                scale = 2200.0 / max_side
+            if max_side > 2600:
+                scale = 2600.0 / max_side
                 im = im.resize(
                     (max(1, int(im.width * scale)), max(1, int(im.height * scale))),
                     Image.Resampling.LANCZOS,
                 )
-
             out = io.BytesIO()
-            im.save(out, format="JPEG", quality=88, optimize=True, progressive=True)
+            im.save(out, format="JPEG", quality=91, optimize=True, progressive=True)
             return out.getvalue(), "image/jpeg"
     except Exception:
-        # İşlenemezse orijinali göndermeyi dene.
         return data, media_type
+
+
+def _prepare_image_variants(data: bytes, media_type: str) -> list[tuple[bytes, str, str]]:
+    """
+    Tam sayfa + okunabilir yakın planlar üretir.
+    Teknik resimlerde küçük ölçü rakamlarının tek küçültülmüş görüntüde kaybolmasını azaltır.
+    """
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            im = ImageOps.exif_transpose(source).convert("RGB")
+
+            # Tam sayfa
+            full = im.copy()
+            max_side = max(full.size)
+            if max_side > 2400:
+                scale = 2400.0 / max_side
+                full = full.resize(
+                    (max(1, int(full.width * scale)), max(1, int(full.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            variants = [("tam teknik resim", full)]
+
+            # 4 bindirmeli bölge. Ölçü yazıları için kırpılmış görüntüler daha yüksek efektif çözünürlük sağlar.
+            w, h = im.size
+            if w >= 1200 or h >= 1200:
+                overlap = 0.10
+                boxes = [
+                    ("sol üst yakın plan", (0, 0, int(w*(0.55+overlap)), int(h*(0.55+overlap)))),
+                    ("sağ üst yakın plan", (int(w*(0.45-overlap)), 0, w, int(h*(0.55+overlap)))),
+                    ("sol alt yakın plan", (0, int(h*(0.45-overlap)), int(w*(0.55+overlap)), h)),
+                    ("sağ alt yakın plan", (int(w*(0.45-overlap)), int(h*(0.45-overlap)), w, h)),
+                ]
+                for label, box in boxes:
+                    crop = im.crop(box)
+                    cmax = max(crop.size)
+                    if cmax > 1800:
+                        scale = 1800.0 / cmax
+                        crop = crop.resize(
+                            (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
+                            Image.Resampling.LANCZOS,
+                        )
+                    variants.append((label, crop))
+
+            encoded=[]
+            for label, img in variants:
+                out=io.BytesIO()
+                img.save(out, format="JPEG", quality=90, optimize=True)
+                encoded.append((out.getvalue(), "image/jpeg", label))
+            return encoded
+    except Exception:
+        return [(data, media_type, "teknik resim")]
+
+
+def _image_sources(data: bytes, media_type: str, filename: str) -> list[dict[str, Any]]:
+    if media_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        b64=base64.standard_b64encode(data).decode("ascii")
+        return [{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}]
+
+    sources=[]
+    for blob, mt, label in _prepare_image_variants(data, media_type):
+        sources.append({"type":"text","text":f"Görüntü: {label}"})
+        sources.append({
+            "type":"image",
+            "source":{"type":"base64","media_type":mt if mt in ("image/jpeg","image/png","image/webp","image/gif") else "image/jpeg","data":base64.standard_b64encode(blob).decode("ascii")}
+        })
+    return sources
+
+
+def _geometry_completeness(result: dict[str, Any]) -> float:
+    """STEP'i tanımlamak için gereken alanların ne kadarının mevcut olduğunu deterministik hesaplar."""
+    state=result.get("state")
+    if not state:
+        return 0.0
+    required=[]
+    base=state.get("base") or {}
+    base_req={
+        "cylinder":["diameter","length"],
+        "flange":["diameter","thickness"],
+        "tube":["outer_diameter","inner_diameter","length"],
+        "block":["x","y","z"],
+        "revolved_profile":["stations"],
+    }
+    for k in base_req.get(base.get("type"), []):
+        required.append(base.get(k) not in (None,"",[]))
+
+    feature_req={
+        "through_hole":["diameter"],
+        "blind_hole":["diameter","depth"],
+        "countersink_hole":["diameter","countersink_diameter","angle"],
+        "counterbore_hole":["diameter","counterbore_diameter","counterbore_depth"],
+        "circular_hole_pattern":["hole_diameter","quantity","pcd"],
+        "linear_hole_pattern":["hole_diameter","quantity","spacing"],
+        "pocket":["width","height","depth"],
+        "slot":["length","width","depth"],
+        "keyway":["width","depth","length"],
+        "chamfer":["distance"],
+        "fillet":["radius"],
+        "shaft_step":["diameter","length"],
+    }
+    for f in state.get("features") or []:
+        for k in feature_req.get(f.get("type"), []):
+            required.append(f.get(k) not in (None,"",[]))
+
+    if not required:
+        return 1.0 if state else 0.0
+    return sum(1 for x in required if x) / len(required)
+
+
+def _dimension_reading_confidence(result: dict[str, Any]) -> float:
+    dims=[d for d in (result.get("dimensions") or []) if d.get("value") is not None]
+    if not dims:
+        return float(result.get("confidence",0) or 0)
+    vals=[]
+    for d in dims:
+        try: vals.append(max(0.0,min(1.0,float(d.get("confidence",0.85) or 0.85))))
+        except Exception: vals.append(0.85)
+    return sum(vals)/len(vals)
+
+
+def rescore_analysis(result: dict[str, Any], cad_validated: bool=False, verification_passed: bool=False) -> dict[str, Any]:
+    """
+    AI'nin tek bir keyfi yüzdesine güvenmez.
+    - geometry_completeness: CAD şemasındaki zorunlu ölçülerin tamamlanması
+    - reading_confidence: tek tek okunan ölçülerin ortalama görsel güveni
+    - confidence: uygulamanın kalibre edilmiş birleşik güveni
+    """
+    completeness=_geometry_completeness(result)
+    reading=_dimension_reading_confidence(result)
+
+    # Bloklayıcı belirsizlik/missing input varsa tamamlık buna göre sınırlandırılır.
+    if result.get("blocking_ambiguities") or result.get("missing_inputs"):
+        completeness=min(completeness, 0.99)
+
+    cad_score=1.0 if cad_validated else (0.92 if completeness >= 0.999 else 0.75)
+    review_score=1.0 if verification_passed else 0.94
+
+    # Net, tamamlanmış ve CAD doğrulanmış resimlerde "model tamamlığı" %100 olabilir.
+    # Görsel okuma güveni yine ayrı kalır.
+    calibrated = 0.45*reading + 0.30*completeness + 0.15*cad_score + 0.10*review_score
+    if result.get("blocking_ambiguities"):
+        calibrated=min(calibrated,0.70)
+    if result.get("missing_inputs"):
+        calibrated=min(calibrated,0.75)
+
+    result["geometry_completeness"]=round(max(0,min(1,completeness)),4)
+    result["reading_confidence"]=round(max(0,min(1,reading)),4)
+    result["confidence"]=round(max(0,min(1,calibrated)),4)
+    result["cad_validated"]=bool(cad_validated)
+    return result
 
 
 def test_anthropic_connection() -> dict[str, Any]:
@@ -149,10 +299,11 @@ def test_anthropic_connection() -> dict[str, Any]:
         raise RuntimeError(f"Anthropic bağlantı testi başarısız: {e}") from e
 
 
-def _anthropic_message(api_key:str, model:str, source:dict, text:str, max_tokens:int=9000) -> str:
+def _anthropic_message(api_key:str, model:str, source, text:str, max_tokens:int=9000) -> str:
+    sources = source if isinstance(source, list) else [source]
     payload={
         "model":model,"max_tokens":max_tokens,"system":SYSTEM_PROMPT,
-        "messages":[{"role":"user","content":[source,{"type":"text","text":text}]}]
+        "messages":[{"role":"user","content":sources+[{"type":"text","text":text}]}]
     }
     req=urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
@@ -174,42 +325,36 @@ def analyze_drawing_bytes(data: bytes, media_type: str, filename: str, verify: b
     api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
     if not api_key:
         raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil. Render Environment bölümüne API anahtarını ekleyin.')
-    model=os.getenv('ANTHROPIC_FAST_MODEL','claude-haiku-4-5-20251001').strip()
-    if not (media_type == 'application/pdf' or filename.lower().endswith('.pdf')):
-        data, media_type = _prepare_image_for_ai(data, media_type)
-    b64=base64.standard_b64encode(data).decode('ascii')
-    if media_type == 'application/pdf' or filename.lower().endswith('.pdf'):
-        source={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
-    else:
-        mt=media_type if media_type in ('image/jpeg','image/png','image/webp','image/gif') else 'image/jpeg'
-        source={"type":"image","source":{"type":"base64","media_type":mt,"data":b64}}
+
+    # Teknik resimde doğruluk öncelikli. Küçük model yerine Sonnet varsayılan.
+    model=os.getenv('ANTHROPIC_DRAWING_MODEL', os.getenv('ANTHROPIC_REVIEW_MODEL','claude-sonnet-5')).strip()
+    sources=_image_sources(data, media_type, filename)
+
     user_text=(
-        'Bu dosya bir üretim teknik resmi veya teknik resim fotoğrafıdır. '
-        'Tüm görünüşleri birlikte incele. Ölçüleri ve geometrik ilişkileri çıkar. '
-        'Eksik/geçersiz ölçü varsa kesinlikle tahmin etme. Desteklenen CAD şemasına dönüştür. '
+        'Bu dosya bir üretim teknik resmidir. Hızdan önce doğruluğa öncelik ver. '
+        'Tam sayfa görüntüsü ve varsa yakın planlar AYNI teknik resmin farklı görünümleridir; bunları farklı parçalar sanma. '
+        'Tüm ortografik/kesit/detay görünüşlerini birlikte incele. '
+        'Önce parçanın üretilebilir ana katısını tanımla, sonra tüm delik/cep/kanal/pah/radyüs/diş özelliklerini ekle. '
+        'Her ölçü için çizimde gerçekten basılı olan değeri kullan; ölçekten tahmin etme. '
+        'Aynı ölçüyü birden fazla yakın planda görürsen tutarlılık kontrolü yap. '
+        'Çizim açık ve tüm geometri-defining ölçüler mevcutsa bunları eksiksiz CAD state içine yerleştir. '
+        'Eksik/geçersiz ölçü varsa kesinlikle tahmin etme ve missing_inputs üret. '
+        'JSON döndürmeden önce tüm görünüşlerin aynı 3D parçayı tarif ettiğini tekrar kontrol et. '
         f'Dosya adı: {filename}'
     )
-    text=_anthropic_message(api_key,model,source,user_text,3200)
-    first=json.loads(_strip_json(text))
-
+    raw=_anthropic_message(api_key,model,sources,user_text,3600)
+    first=json.loads(_strip_json(raw))
+    first=rescore_analysis(first, cad_validated=False, verification_passed=False)
     if verify:
         return review_drawing_bytes(data, media_type, filename, first)
     return first
-
 
 def review_drawing_bytes(data: bytes, media_type: str, filename: str, first: dict[str, Any]) -> dict[str, Any]:
     api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
     if not api_key:
         raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil.')
     model=os.getenv('ANTHROPIC_REVIEW_MODEL','claude-sonnet-5').strip()
-    if not (media_type == 'application/pdf' or filename.lower().endswith('.pdf')):
-        data, media_type = _prepare_image_for_ai(data, media_type)
-    b64=base64.standard_b64encode(data).decode('ascii')
-    if media_type == 'application/pdf' or filename.lower().endswith('.pdf'):
-        source={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
-    else:
-        mt=media_type if media_type in ('image/jpeg','image/png','image/webp','image/gif') else 'image/jpeg'
-        source={"type":"image","source":{"type":"base64","media_type":mt,"data":b64}}
+    source=_image_sources(data, media_type, filename)
     reviewer = '''You are the independent checking engineer. Re-read the SAME drawing from scratch and audit the proposed extraction below.
 Look specifically for: missed dimensions, diameter vs radius confusion, overall vs segment length confusion, section-view mistakes, wrong hole counts/PCD, thread callouts, tolerance values accidentally used as nominal dimensions, and dimensions inferred from scale rather than printed values.
 Never preserve a questionable value just because the first engineer proposed it. If any geometry-defining value cannot be explicitly verified from the drawing, add a blocking ambiguity and set can_build=false.
@@ -220,13 +365,13 @@ Return the COMPLETE corrected JSON in exactly the same schema as the first extra
         reviewed.setdefault('warnings',[])
         reviewed['warnings'].append('Bağımsız ikinci AI mühendislik kontrolü tamamlandı.')
         reviewed['verification_status']='passed'
-        return reviewed
+        return rescore_analysis(reviewed, cad_validated=False, verification_passed=True)
     except Exception:
         fallback=json.loads(json.dumps(first))
         fallback.setdefault('warnings',[])
         fallback['warnings'].append('İkinci AI kontrolü geçerli JSON üretemedi. İlk analiz korundu; ölçüleri kullanıcı onayıyla tamamlayabilirsiniz.')
         fallback['verification_status']='failed'
-        return fallback
+        return rescore_analysis(fallback, cad_validated=False, verification_passed=False)
 
 
 def validate_analysis(result: dict[str,Any]) -> dict[str,Any]:
@@ -278,8 +423,14 @@ def validate_analysis(result: dict[str,Any]) -> dict[str,Any]:
             if any(zs[i]>zs[i+1] for i in range(len(zs)-1)): result['blocking_ambiguities'].append('Revolved profile z istasyonları sıralı değil.')
             if any(d<=0 for d in ds): result['blocking_ambiguities'].append('Revolved profile çaplarından biri geçersiz.')
         except Exception: result['blocking_ambiguities'].append('Revolved profile istasyonları geçersiz.')
-    if result['blocking_ambiguities'] or result['confidence'] < 0.72:
-        result['can_build']=False
-        if result['confidence']<0.72: result['warnings'].append('Güven skoru STEP üretme eşiğinin altında (0.72).')
+    # can_build değerini eski AI cevabından miras alma; mevcut, çözülmüş geometriye göre yeniden hesapla.
+    geometry_complete = not result['blocking_ambiguities'] and not result.get('missing_inputs')
+    # STEP kilidi artık modelin keyfi tek güven yüzdesine değil, geometrik tamamlığa bağlı.
+    result['can_build'] = bool(geometry_complete)
     result['state']=state
+    result=rescore_analysis(
+        result,
+        cad_validated=bool(result.get('cad_validated')),
+        verification_passed=result.get('verification_status')=='passed'
+    )
     return result
