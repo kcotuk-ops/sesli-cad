@@ -16,7 +16,7 @@
 <div class="voice"><button class="mic" id="mic">🎤</button><textarea id="command" placeholder="Örn: Sağ üste 10 mm delik aç. Dış üst kenara 2 mm pah ver."></textarea><button class="aiBtn" id="aiBtn">AI Analiz Et</button></div></main>
 <aside class="panel right" id="rightPanel"><div class="panelhead">PropertyManager <button class="drawer" id="closeProp">✕</button></div><div class="prop" id="propertyPanel"></div></aside>
 </div><div class="status"><span id="status">Hazır</span><span>Birim: mm</span></div></div>
-<div class="drawingPanel" id="drawingPanel"><div class="drawingCard"><div class="drawingHead"><h2>📐 Teknik Resimden 3D Parça</h2><button class="topbtn" style="color:#111" id="drawingCloseX">✕</button></div><div class="drawingBody"><div class="uploadBox"><b>Teknik resim fotoğrafı veya PDF yükle</b><p style="font-size:12px;color:#64748b">JPG / PNG / WEBP / PDF · Fotoğraf mümkün olduğunca düz, net ve tüm ölçüler görünür olmalı.</p><input id="drawingFile" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"><button class="analyzeBtn" id="drawingAnalyze">AI ile teknik resmi analiz et</button></div><div id="drawingStatus" style="font-size:12px;margin-top:10px;color:#475569"></div><div id="drawingResult"></div><div class="drawingActions"><button class="closeDrawing" id="drawingCancel">Kapat</button><button class="useDrawing" id="drawingUse" disabled>Bu modeli kullan</button></div></div></div></div><div class="modalBg" id="modalBg"><div class="modal"><div class="modalHead" id="modalTitle"></div><div class="modalBody" id="modalBody"></div><div class="modalFoot"><button class="cancel" id="modalCancel">İptal</button><button class="create" id="modalOk">Önizle ve Ekle</button></div></div></div>
+<div class="drawingPanel" id="drawingPanel"><div class="drawingCard"><div class="drawingHead"><h2>📐 Teknik Resimden 3D Parça</h2><button class="topbtn" style="color:#111" id="drawingCloseX">✕</button></div><div class="drawingBody"><div class="uploadBox"><b>Teknik resim fotoğrafı veya PDF yükle</b><p style="font-size:12px;color:#64748b">JPG / PNG / WEBP / PDF · Fotoğraf mümkün olduğunca düz, net ve tüm ölçüler görünür olmalı.</p><input id="drawingFile" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"><button class="analyzeBtn" id="drawingAnalyze">AI ile teknik resmi analiz et</button></div><div id="drawingStatus" style="font-size:12px;margin-top:10px;color:#475569"></div><div id="drawingResult"></div><div class="drawingActions"><button class="closeDrawing" id="drawingCancel">Kapat</button><button class="closeDrawing" id="drawingVerify" disabled>İkinci AI kontrolü</button><button class="useDrawing" id="drawingUse" disabled>Bu modeli kullan</button></div></div></div></div><div class="modalBg" id="modalBg"><div class="modal"><div class="modalHead" id="modalTitle"></div><div class="modalBody" id="modalBody"></div><div class="modalFoot"><button class="cancel" id="modalCancel">İptal</button><button class="create" id="modalOk">Önizle ve Ekle</button></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script><script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script><script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <script>
 const $=id=>document.getElementById(id),val=id=>+$((id)).value;
@@ -28,17 +28,35 @@ let drawingAnalysis=null;
 function openDrawing(){ $('drawingPanel').style.display='flex'; }
 function closeDrawing(){ $('drawingPanel').style.display='none'; }
 $('drawingBtn').onclick=openDrawing;$('drawingBtnMobile').onclick=openDrawing;$('drawingCancel').onclick=closeDrawing;$('drawingCloseX').onclick=closeDrawing;
-$('drawingAnalyze').onclick=async()=>{
-  const f=$('drawingFile').files[0]; if(!f){alert('Önce teknik resim fotoğrafı veya PDF seç.');return}
-  $('drawingStatus').textContent='AI görünüşleri, ölçüleri ve geometrik ilişkileri analiz ediyor…';$('drawingResult').innerHTML='';$('drawingUse').disabled=true;drawingAnalysis=null;
-  const fd=new FormData();fd.append('file',f);
-  try{
-    const r=await fetch('/api/drawing/analyze',{method:'POST',body:fd});const j=await r.json();if(!r.ok)throw new Error(j.detail||'Analiz hatası');drawingAnalysis=j;
+function drawingRender(j, verified=false){
+    drawingAnalysis=j;
     const conf=Math.round((j.confidence||0)*100);const dims=(j.dimensions||[]).map(d=>`<div class="dimRow"><b>${d.label||d.kind||'Ölçü'}</b>: ${d.value==null?'okunamadı':d.value+' '+(d.unit||'mm')} <span style="float:right;color:#64748b">${Math.round((d.confidence||0)*100)}%</span></div>`).join('');
     const amb=(j.blocking_ambiguities||[]).map(x=>`<div class="bad">⛔ ${x}</div>`).join('');const warns=(j.warnings||[]).map(x=>`<div class="warn">⚠️ ${x}</div>`).join('');const interp=(j.interpretation||[]).map(x=>`<div class="dimRow">• ${x}</div>`).join('');
-    $('drawingResult').innerHTML=`<div class="analysisGrid"><div class="analysisCard"><h4>ANALİZ GÜVENİ</h4><div class="confidence">%${conf}</div><div>${j.drawing_type||'unknown'} · ${j.units||'mm'}</div>${j.can_build?'<div class="good">✓ STEP için yeterli ölçü bulundu.</div>':'<div class="bad">STEP oluşturulmadan önce belirsizlikler çözülmeli.</div>'}</div><div class="analysisCard"><h4>PARÇA</h4><b>${j.part_name||'Parça'}</b>${interp}</div><div class="analysisCard"><h4>OKUNAN ÖLÇÜLER</h4>${dims||'Ölçü listesi yok.'}</div><div class="analysisCard"><h4>KONTROL</h4>${amb||'<div class="good">Bloklayıcı belirsizlik bulunmadı.</div>'}${warns}</div></div>`;
-    if(j.stl) load(j.stl,true); $('drawingUse').disabled=!j.can_build || !j.state; $('drawingStatus').textContent=j.can_build?'Analiz tamamlandı. Turuncu 3D önizlemeyi kontrol et.':'Analiz tamamlandı; eksik/belirsiz ölçüler var.';
-  }catch(e){$('drawingStatus').textContent='Hata: '+e.message}
+    $('drawingResult').innerHTML=`<div class="analysisGrid"><div class="analysisCard"><h4>ANALİZ GÜVENİ</h4><div class="confidence">%${conf}</div><div>${j.drawing_type||'unknown'} · ${j.units||'mm'}</div>${verified?'<div class="good">✓ İkinci AI kontrolü tamamlandı.</div>':'<div class="warn">İlk analiz tamamlandı. Üretim öncesi ikinci kontrol önerilir.</div>'}${j.can_build?'<div class="good">✓ CAD geometrisi oluşturulabilir.</div>':'<div class="bad">STEP oluşturulmadan önce belirsizlikler çözülmeli.</div>'}</div><div class="analysisCard"><h4>PARÇA</h4><b>${j.part_name||'Parça'}</b>${interp}</div><div class="analysisCard"><h4>OKUNAN ÖLÇÜLER</h4>${dims||'Ölçü listesi yok.'}</div><div class="analysisCard"><h4>KONTROL</h4>${amb||'<div class="good">Bloklayıcı belirsizlik bulunmadı.</div>'}${warns}</div></div>`;
+    if(j.stl) load(j.stl,true);
+    $('drawingVerify').disabled=!j.state;
+    $('drawingUse').disabled=!verified || !j.can_build || !j.state;
+    $('drawingStatus').textContent=verified?(j.can_build?'İkinci kontrol tamamlandı. Model kullanılabilir.':'İkinci kontrol tamamlandı; belirsizlikler çözülmeli.'):'İlk analiz tamamlandı. Ölçüleri kontrol et ve “İkinci AI kontrolü”ne bas.';
+}
+async function fetchWithTimeout(url, options, ms=95000){
+  const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
+  try{return await fetch(url,{...options,signal:c.signal})}finally{clearTimeout(t)}
+}
+$('drawingAnalyze').onclick=async()=>{
+  const f=$('drawingFile').files[0]; if(!f){alert('Önce teknik resim fotoğrafı veya PDF seç.');return}
+  $('drawingStatus').textContent='İlk AI analizi yapılıyor… Genellikle 20–60 saniye sürer.';$('drawingResult').innerHTML='';$('drawingUse').disabled=true;$('drawingVerify').disabled=true;drawingAnalysis=null;
+  const fd=new FormData();fd.append('file',f);
+  try{
+    const r=await fetchWithTimeout('/api/drawing/analyze',{method:'POST',body:fd},95000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Analiz hatası');drawingRender(j,false);
+  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'Analiz 95 saniyede tamamlanamadı. Render/AI servisi yavaş olabilir; tekrar deneyin.':'Hata: '+e.message}
+};
+$('drawingVerify').onclick=async()=>{
+  const f=$('drawingFile').files[0]; if(!f||!drawingAnalysis)return;
+  $('drawingStatus').textContent='Bağımsız ikinci AI kontrolü yapılıyor…';$('drawingVerify').disabled=true;$('drawingUse').disabled=true;
+  const fd=new FormData();fd.append('file',f);fd.append('analysis',JSON.stringify(drawingAnalysis));
+  try{
+    const r=await fetchWithTimeout('/api/drawing/verify',{method:'POST',body:fd},95000);const j=await r.json();if(!r.ok)throw new Error(j.detail||'Doğrulama hatası');drawingRender(j,true);
+  }catch(e){$('drawingStatus').textContent=e.name==='AbortError'?'İkinci kontrol 95 saniyede tamamlanamadı. Tekrar deneyin.':'İkinci kontrol hatası: '+e.message;$('drawingVerify').disabled=false}
 };
 $('drawingUse').onclick=()=>{if(!drawingAnalysis||!drawingAnalysis.can_build||!drawingAnalysis.state)return;state=drawingAnalysis.state;state.part_name=drawingAnalysis.part_name||state.part_name||'parca';$('docName').value=state.part_name;disposeObj(ghost);ghost=null;renderTree();selected={kind:'base',index:-1};renderBaseProps();preview();closeDrawing();setStatus('Teknik resimden çıkarılan CAD modeli yüklendi. STEP + PDF ile dışa aktarabilirsin.')};
 

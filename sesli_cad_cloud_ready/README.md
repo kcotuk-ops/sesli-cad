@@ -59,3 +59,9 @@ Render > sesli-cad > Environment bölümüne şu secret eklenmelidir:
 - `DRAWING_AI_VERIFY=1` (iki aşamalı kontrol açık)
 
 > Önemli: Teknik resimde geometriyi tanımlamak için gerekli bir ölçü okunamıyorsa sistem ölçüyü tahmin etmez ve STEP üretimini kilitler. Fotoğrafın düz, net, kırpılmamış ve tüm ölçülerin okunur olması sonuç kalitesini doğrudan etkiler.
+
+
+## V7.2 analiz akışı
+- İlk teknik resim analizi tek AI çağrısıdır ve sonucu hemen gösterir.
+- İkinci bağımsız kontrol ayrı butondur.
+- Her AI çağrısında 95 saniye istemci timeoutu vardır; sonsuz bekleme yoktur.

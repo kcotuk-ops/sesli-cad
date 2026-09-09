@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-import json,uuid,copy
+import json,uuid,copy,asyncio
 from fastapi import FastAPI,HTTPException,UploadFile,File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +9,7 @@ from cadquery import exporters
 from .cad_engine import CadState,export_files,build_model
 from .drawing import create_pdf
 from .parser import parse_turkish_command
-from .drawing_ai import analyze_drawing_bytes,validate_analysis
+from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis
 
 ROOT=Path(__file__).resolve().parent.parent;OUT=ROOT/'output';OUT.mkdir(exist_ok=True)
 app=FastAPI(title='VoiceCAD Studio')
@@ -47,12 +47,29 @@ async def analyze_drawing(file:UploadFile=File(...)):
         allowed=('image/jpeg','image/png','image/webp','image/gif','application/pdf')
         if media not in allowed and not (file.filename or '').lower().endswith(('.jpg','.jpeg','.png','.webp','.gif','.pdf')):
             raise ValueError('JPG, PNG, WEBP veya PDF yükleyin.')
-        result=validate_analysis(analyze_drawing_bytes(data,media,file.filename or 'teknik_resim'))
+        result=validate_analysis(await asyncio.to_thread(analyze_drawing_bytes,data,media,file.filename or 'teknik_resim',False))
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
             except Exception as ge:
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Çıkarılan geometri CAD motorunda oluşturulamadı: '+str(ge))
+        return result
+    except Exception as e: raise HTTPException(400,str(e))
+
+
+@app.post('/api/drawing/verify')
+async def verify_drawing(file:UploadFile=File(...), analysis:str=File(...)):
+    try:
+        data=await file.read()
+        if not data: raise ValueError('Dosya boş.')
+        first=json.loads(analysis)
+        media=file.content_type or 'application/octet-stream'
+        result=validate_analysis(await asyncio.to_thread(review_drawing_bytes,data,media,file.filename or 'teknik_resim',first))
+        if result.get('state'):
+            try:
+                st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
+            except Exception as ge:
+                result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Doğrulanan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
     except Exception as e: raise HTTPException(400,str(e))
 

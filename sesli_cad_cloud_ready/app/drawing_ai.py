@@ -84,7 +84,7 @@ def _anthropic_message(api_key:str, model:str, source:dict, text:str, max_tokens
         headers={"content-type":"application/json","x-api-key":api_key,"anthropic-version":"2023-06-01"}
     )
     try:
-        with urllib.request.urlopen(req,timeout=120) as resp:
+        with urllib.request.urlopen(req,timeout=75) as resp:
             body=json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail=e.read().decode("utf-8",errors="replace")
@@ -94,7 +94,7 @@ def _anthropic_message(api_key:str, model:str, source:dict, text:str, max_tokens
     return "".join(c.get("text","") for c in body.get("content",[]) if c.get("type")=="text")
 
 
-def analyze_drawing_bytes(data: bytes, media_type: str, filename: str) -> dict[str, Any]:
+def analyze_drawing_bytes(data: bytes, media_type: str, filename: str, verify: bool=False) -> dict[str, Any]:
     api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
     if not api_key:
         raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil. Render Environment bölümüne API anahtarını ekleyin.')
@@ -114,19 +114,31 @@ def analyze_drawing_bytes(data: bytes, media_type: str, filename: str) -> dict[s
     text=_anthropic_message(api_key,model,source,user_text,9000)
     first=json.loads(_strip_json(text))
 
-    if os.getenv('DRAWING_AI_VERIFY','1').strip().lower() not in ('0','false','no'):
-        reviewer = '''You are the independent checking engineer. Re-read the SAME drawing from scratch and audit the proposed extraction below.
+    if verify:
+        return review_drawing_bytes(data, media_type, filename, first)
+    return first
+
+
+def review_drawing_bytes(data: bytes, media_type: str, filename: str, first: dict[str, Any]) -> dict[str, Any]:
+    api_key=os.getenv('ANTHROPIC_API_KEY','').strip()
+    if not api_key:
+        raise RuntimeError('ANTHROPIC_API_KEY tanımlı değil.')
+    model=os.getenv('ANTHROPIC_MODEL','claude-sonnet-5').strip()
+    b64=base64.standard_b64encode(data).decode('ascii')
+    if media_type == 'application/pdf' or filename.lower().endswith('.pdf'):
+        source={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
+    else:
+        mt=media_type if media_type in ('image/jpeg','image/png','image/webp','image/gif') else 'image/jpeg'
+        source={"type":"image","source":{"type":"base64","media_type":mt,"data":b64}}
+    reviewer = '''You are the independent checking engineer. Re-read the SAME drawing from scratch and audit the proposed extraction below.
 Look specifically for: missed dimensions, diameter vs radius confusion, overall vs segment length confusion, section-view mistakes, wrong hole counts/PCD, thread callouts, tolerance values accidentally used as nominal dimensions, and dimensions inferred from scale rather than printed values.
 Never preserve a questionable value just because the first engineer proposed it. If any geometry-defining value cannot be explicitly verified from the drawing, add a blocking ambiguity and set can_build=false.
 Return the COMPLETE corrected JSON in exactly the same schema as the first extraction, and nothing else.'''
-        review_text=_anthropic_message(
-            api_key,model,source,reviewer+'\n\nFIRST ENGINEER JSON:\n'+json.dumps(first,ensure_ascii=False),9000
-        )
-        reviewed=json.loads(_strip_json(review_text))
-        reviewed.setdefault('warnings',[])
-        reviewed['warnings'].append('Teknik resim iki aşamalı AI mühendislik kontrolünden geçirildi.')
-        return reviewed
-    return first
+    review_text=_anthropic_message(api_key,model,source,reviewer+'\n\nFIRST ENGINEER JSON:\n'+json.dumps(first,ensure_ascii=False),6000)
+    reviewed=json.loads(_strip_json(review_text))
+    reviewed.setdefault('warnings',[])
+    reviewed['warnings'].append('Bağımsız ikinci AI mühendislik kontrolü tamamlandı.')
+    return reviewed
 
 
 def validate_analysis(result: dict[str,Any]) -> dict[str,Any]:
