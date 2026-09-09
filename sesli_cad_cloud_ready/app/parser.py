@@ -43,8 +43,13 @@ def _upsert(state,typ,data,match=None):
 def _remove(state,typ,match=None):
     state.features=[f for f in state.features if not (f.get("type")==typ and (match is None or match(f)))]
 
+def _has_word(t, word):
+    return re.search(rf"(?<!\w){re.escape(word)}(?!\w)", t) is not None
+
 def _new_part(t):
-    return any(w in t for w in ("yap","oluştur","çiz","hazırla","üret")) and any(w in t for w in ("flanş","mil","silindir","şaft","blok","plaka","boru"))
+    action=any(_has_word(t,w) for w in ("yap","oluştur","çiz","hazırla","üret"))
+    part=any(_has_word(t,w) for w in ("flanş","mil","silindir","şaft","blok","plaka","boru"))
+    return action and part
 
 def _face(t):
     if any(w in t for w in ("alt yüz","alt yüzey","alttaki yüz")): return "bottom"
@@ -121,7 +126,7 @@ def parse_turkish_command(text: str, current: CadState | None=None) -> CadState:
             vals=[n(v) for v in re.findall(NUM,t)[:3]]; vals=(vals+[100,60,20])[:3]
             x=x if x is not None else vals[0]; y=y if y is not None else vals[1]; z=z if z is not None else vals[2]
         state.part_name="blok"; state.base={"type":"block","x":float(x),"y":float(y),"z":float(z)}
-    elif any(w in t for w in ("mil","silindir","şaft")):
+    elif any(_has_word(t,w) for w in ("mil","silindir","şaft")):
         d=_first([rf"{NUM}\s*{UNIT}\s*(?:çapında|çaplı|çap)",rf"çap(?:ı)?\s*{NUM}"],t,state.base.get("diameter",50))
         l=_first([rf"{NUM}\s*{UNIT}\s*(?:uzunluğunda|boyunda|uzunluk)",rf"(?:uzunluk|boy)(?:u)?\s*{NUM}"],t,state.base.get("length",100))
         state.part_name="mil"; state.base={"type":"cylinder","diameter":float(d),"length":float(l)}

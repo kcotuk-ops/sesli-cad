@@ -5,3 +5,4 @@ reportlab>=4.0
 matplotlib>=3.8
 numpy>=1.26
 python-multipart>=0.0.9
+
