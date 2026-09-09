@@ -9,7 +9,7 @@ from cadquery import exporters
 from .cad_engine import CadState,export_files,build_model
 from .drawing import create_pdf
 from .parser import parse_turkish_command
-from .drawing_ai import analyze_drawing_bytes,review_drawing_bytes,validate_analysis,test_anthropic_connection,rescore_analysis
+from .drawing_local import analyze_drawing_bytes, review_drawing_bytes, validate_local_analysis
 
 ROOT=Path(__file__).resolve().parent.parent;OUT=ROOT/'output';OUT.mkdir(exist_ok=True)
 app=FastAPI(title='VoiceCAD Studio')
@@ -21,12 +21,6 @@ class ResolveDrawingIn(BaseModel):
 @app.get('/health')
 def health():return {'status':'ok'}
 
-@app.get('/api/drawing/ai-health')
-async def drawing_ai_health():
-    try:
-        return await asyncio.to_thread(test_anthropic_connection)
-    except Exception as e:
-        raise HTTPException(503, str(e))
 
 def _stl(state:CadState):
     job=uuid.uuid4().hex[:10];d=OUT/job;d.mkdir(parents=True,exist_ok=True);shape=build_model(state);p=d/'preview.stl';exporters.export(shape,str(p),tolerance=.05,angularTolerance=.1);return job,p
@@ -57,16 +51,21 @@ async def analyze_drawing(file:UploadFile=File(...)):
         allowed=('image/jpeg','image/png','image/webp','image/gif','application/pdf')
         if media not in allowed and not (file.filename or '').lower().endswith(('.jpg','.jpeg','.png','.webp','.gif','.pdf')):
             raise ValueError('JPG, PNG, WEBP veya PDF yükleyin.')
-        result=validate_analysis(await asyncio.to_thread(analyze_drawing_bytes,data,media,file.filename or 'teknik_resim',False))
+        result=validate_local_analysis(await asyncio.to_thread(analyze_drawing_bytes,data,media,file.filename or 'teknik_resim',False))
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
                 result['cad_validated']=True
-                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
+                result=validate_local_analysis(result)
             except Exception as ge:
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Çıkarılan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
-    except Exception as e: raise HTTPException(400,str(e))
+    except RuntimeError as e:
+        raise HTTPException(502,str(e))
+    except ValueError as e:
+        raise HTTPException(422,str(e))
+    except Exception as e:
+        raise HTTPException(400,f"Teknik resim analizi başarısız: {e}")
 
 
 @app.post('/api/drawing/verify')
@@ -76,12 +75,12 @@ async def verify_drawing(file:UploadFile=File(...), analysis:str=File(...)):
         if not data: raise ValueError('Dosya boş.')
         first=json.loads(analysis)
         media=file.content_type or 'application/octet-stream'
-        result=validate_analysis(await asyncio.to_thread(review_drawing_bytes,data,media,file.filename or 'teknik_resim',first))
+        result=validate_local_analysis(await asyncio.to_thread(review_drawing_bytes,data,media,file.filename or 'teknik_resim',first))
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
                 result['cad_validated']=True
-                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
+                result=validate_local_analysis(result)
             except Exception as ge:
                 result['can_build']=False; result.setdefault('blocking_ambiguities',[]).append('Doğrulanan geometri CAD motorunda oluşturulamadı: '+str(ge))
         return result
@@ -110,7 +109,7 @@ def resolve_drawing(inp:ResolveDrawingIn):
         result=json.loads(json.dumps(inp.analysis))
         missing=result.get('missing_inputs') or []
         if not missing:
-            return validate_analysis(result)
+            return validate_local_analysis(result)
 
         unresolved=[]
         resolved_reasons=set()
@@ -138,12 +137,12 @@ def resolve_drawing(inp:ResolveDrawingIn):
         if resolved_reasons:
             result['warnings'].append('Eksik ölçüler kullanıcı tarafından girildi; üretim öncesi teknik resimle son kontrol önerilir.')
 
-        result=validate_analysis(result)
+        result=validate_local_analysis(result)
         if result.get('state'):
             try:
                 st=CadState(**result['state']); job,p=_stl(st); result['stl']=f'/files/{job}/{p.name}'
                 result['cad_validated']=True
-                result=rescore_analysis(result,cad_validated=True,verification_passed=result.get('verification_status')=='passed')
+                result=validate_local_analysis(result)
             except Exception as ge:
                 result['can_build']=False
                 result.setdefault('blocking_ambiguities',[]).append('Tamamlanan geometri CAD motorunda oluşturulamadı: '+str(ge))
